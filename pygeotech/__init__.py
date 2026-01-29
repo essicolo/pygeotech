@@ -15,7 +15,7 @@ physics
 coupling
     Multiphysics coupling strategies.
 solvers
-    Solver backends (FiPy, FEniCS, PINN, analytical).
+    Solver backends (FiPy, PINN, analytical).
 time
     Time-stepping schemes.
 postprocess

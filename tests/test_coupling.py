@@ -8,7 +8,6 @@ from pygeotech.physics.darcy import Darcy
 from pygeotech.physics.transport import Transport
 from pygeotech.coupling.sequential import Sequential
 from pygeotech.coupling.iterative import Iterative
-from pygeotech.coupling.monolithic import Monolithic
 
 
 def _make_modules():
@@ -41,11 +40,3 @@ class TestIterative:
         it = Iterative([flow, transport], max_iter=10, tol=1e-5)
         assert it.max_iter == 10
         assert it.tol == 1e-5
-
-
-class TestMonolithic:
-    def test_step_not_implemented(self):
-        flow, transport = _make_modules()
-        mono = Monolithic([flow, transport])
-        with pytest.raises(NotImplementedError):
-            mono.step({})
