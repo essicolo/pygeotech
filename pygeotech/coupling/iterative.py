@@ -11,6 +11,7 @@ from typing import Any, Sequence
 import numpy as np
 
 from pygeotech.coupling.base import CoupledProblem
+from pygeotech.coupling.sequential import Sequential
 from pygeotech.physics.base import PhysicsModule
 
 
@@ -37,6 +38,7 @@ class Iterative(CoupledProblem):
         super().__init__(modules)
         self.max_iter = max_iter
         self.tol = tol
+        self._sequential = Sequential(modules)
 
     def step(
         self,
@@ -55,18 +57,18 @@ class Iterative(CoupledProblem):
             Converged solutions.
         """
         updated = dict(solutions)
+
         for iteration in range(self.max_iter):
-            prev = {k: np.copy(v) if isinstance(v, np.ndarray) else v
-                    for k, v in updated.items()}
-            for module in self.modules:
-                updated[module.name] = {
-                    "module": module,
-                    "dt": dt,
-                    "t": t,
-                    "iteration": iteration,
-                }
+            prev = {}
+            for k, v in updated.items():
+                if isinstance(v, np.ndarray):
+                    prev[k] = v.copy()
+
+            updated = self._sequential.step(updated, dt=dt, t=t)
+
             if self._converged(prev, updated):
                 break
+
         return updated
 
     def _converged(
@@ -77,9 +79,12 @@ class Iterative(CoupledProblem):
         """Check convergence based on field change norms."""
         for key in old:
             o = old[key]
-            n = new[key]
+            n = new.get(key)
             if isinstance(o, np.ndarray) and isinstance(n, np.ndarray):
-                change = np.linalg.norm(n - o) / (np.linalg.norm(o) + 1e-30)
+                norm_old = np.linalg.norm(o)
+                if norm_old < 1e-30:
+                    continue
+                change = np.linalg.norm(n - o) / norm_old
                 if change > self.tol:
                     return False
         return True

@@ -1,7 +1,7 @@
 """Soil-Vegetation-Atmosphere Transfer (SVAT) module.
 
 Extends Richards equation with:
-- Evapotranspiration (potential → actual ET)
+- Evapotranspiration (potential -> actual ET)
 - Root water uptake (Feddes / Jarvis model)
 - Surface energy / water balance
 """
@@ -20,8 +20,8 @@ from pygeotech.physics.base import PhysicsModule
 class RootUptakeParams:
     """Parameters for the Feddes root water uptake model.
 
-    The sink term S(h) = α(h) · S_max where α(h) is a stress function
-    varying between 0 and 1 depending on pressure head.
+    The sink term S(h) = alpha(h) * S_max where alpha(h) is a stress
+    function varying between 0 and 1 depending on pressure head.
 
     Args:
         h1: Anaerobiosis point (m, negative).
@@ -73,13 +73,13 @@ class SVAT(PhysicsModule):
         return True
 
     def feddes_alpha(self, h: np.ndarray) -> np.ndarray:
-        """Compute the Feddes stress reduction factor α(h).
+        """Compute the Feddes stress reduction factor alpha(h).
 
         Args:
             h: Pressure head array (m).
 
         Returns:
-            Stress factor α ∈ [0, 1].
+            Stress factor alpha in [0, 1].
         """
         rp = self.root_uptake
         alpha = np.zeros_like(h)
@@ -124,14 +124,15 @@ class SVAT(PhysicsModule):
         depth = z_surface - z
         root_mask = depth <= self.root_uptake.root_depth
         sink = np.zeros_like(field_values)
-        n_root = root_mask.sum()
-        if n_root > 0:
+        if root_mask.any():
             sink[root_mask] = alpha[root_mask] * pet / self.root_uptake.root_depth
 
         return sink
 
     def coefficients(self) -> dict[str, np.ndarray]:
-        return self.materials.cell_property("porosity"), {}
+        """Return per-cell porosity."""
+        porosity = self.materials.cell_property("porosity")
+        return {"porosity": porosity}
 
     def residual(
         self,
@@ -139,5 +140,5 @@ class SVAT(PhysicsModule):
         field_values_old: np.ndarray | None = None,
         dt: float | None = None,
     ) -> np.ndarray:
-        """Placeholder: returns root sink as a source term."""
+        """Return the root water uptake sink as a source term."""
         return self.root_sink(field_values)

@@ -22,7 +22,8 @@ def integrate_flux(
     """Integrate the normal flux across a boundary.
 
     Uses the Darcy velocity field and a midpoint rule over boundary
-    segments.
+    segments.  The per-cell hydraulic conductivity is retrieved from
+    the material map when available.
 
     Args:
         solution: A :class:`~pygeotech.solvers.base.Solution`.
@@ -48,6 +49,10 @@ def integrate_flux(
         return 0.0
 
     grad_H = compute_gradient(mesh, H)
+
+    # Retrieve per-cell conductivity
+    K_cell = _get_cell_conductivity(solution)
+
     # Average velocity at boundary nodes (nearest cell)
     centers = mesh.cell_centers()
 
@@ -79,7 +84,7 @@ def integrate_flux(
         ic = np.argmin(dist)
 
         # Flux = -K grad(H) · n * ds
-        K = 1.0  # default; ideally from materials
+        K = float(K_cell[ic])
         flux = -K * np.dot(grad_H[ic], normal) * seg_len
         total_flux += flux
 
@@ -89,17 +94,58 @@ def integrate_flux(
 def mass_balance(solution: Any) -> dict[str, float]:
     """Compute overall mass balance for the solution.
 
-    Returns a dictionary with inflow, outflow, and balance error.
+    Integrates flux over each boundary face (left, right, top, bottom)
+    and computes the balance error.
 
     Args:
-        solution: Solution object.
+        solution: Solution object with ``"H"`` field and mesh.
 
     Returns:
         Dictionary with keys ``"inflow"``, ``"outflow"``, ``"balance_error"``.
     """
-    # Placeholder: full implementation requires flux integration on all boundaries
+    from pygeotech.boundaries.locators import left, right, top, bottom
+
+    if "H" not in solution.fields:
+        return {"inflow": 0.0, "outflow": 0.0, "balance_error": 0.0}
+
+    locators = [left(), right(), top(), bottom()]
+    inflow = 0.0
+    outflow = 0.0
+
+    for loc in locators:
+        flux = integrate_flux(solution, loc)
+        if flux > 0:
+            inflow += flux
+        else:
+            outflow += abs(flux)
+
+    balance_error = inflow - outflow
     return {
-        "inflow": 0.0,
-        "outflow": 0.0,
-        "balance_error": 0.0,
+        "inflow": inflow,
+        "outflow": outflow,
+        "balance_error": balance_error,
     }
+
+
+def _get_cell_conductivity(solution: Any) -> np.ndarray:
+    """Extract per-cell hydraulic conductivity from the solution.
+
+    Falls back to K=1.0 if the material map is not available.
+    """
+    mesh = solution.mesh
+
+    # Try getting from materials stored on the mesh
+    try:
+        if hasattr(solution, "materials"):
+            return solution.materials.cell_property("hydraulic_conductivity")
+    except (AttributeError, KeyError):
+        pass
+
+    # Try from the mesh's material map
+    try:
+        if hasattr(mesh, "materials"):
+            return mesh.materials.cell_property("hydraulic_conductivity")
+    except (AttributeError, KeyError):
+        pass
+
+    return np.ones(mesh.n_cells)
