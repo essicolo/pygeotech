@@ -12,7 +12,7 @@ where:
 Supports all pygeotech physics modules:
 
 - **Darcy**: ∇·(K∇H) = 0
-- **Richards** (linearised): K∇²H = S ∂H/∂t
+- **Richards**: ∇·[K(h)(∇h + ∇z)] = C(h) ∂h/∂t  (van Genuchten)
 - **Transport**: D∇²C − v·∇C = Rθ ∂C/∂t + λRC
 - **Heat**: λ∇²T − ρ_w c_w v·∇T = ρc ∂T/∂t
 - **Mechanics**: ∇·σ + b = 0 (plane strain / plane stress elasticity)
@@ -371,40 +371,104 @@ class PINNBackend(Solver):
         x: Any,
         torch: Any,
     ) -> Any:
-        """Richards (linearised): K∇²H = S ∂H/∂t.
+        """Richards: ∇·[K(h)(∇h + ∇z)] = C(h) ∂h/∂t.
 
-        Uses saturated conductivity and porosity as a linearised
-        storage approximation.
+        When a retention model (e.g. van Genuchten) is available, the
+        full nonlinear equation is enforced with K(h) and C(h) computed
+        in differentiable PyTorch operations so that autodiff correctly
+        propagates through the conductivity function.
+
+        Without a retention model, falls back to the linearised form
+        K_sat ∇²H = n ∂H/∂t.
         """
         dim = physics.dim
         H = net(x)
 
-        grads = torch.autograd.grad(
+        grads_H = torch.autograd.grad(
             H, x,
             grad_outputs=torch.ones_like(H),
             create_graph=True,
         )[0]
 
-        # Spatial Laplacian (first `dim` coordinates)
-        laplacian = torch.zeros_like(H)
-        for d in range(dim):
-            grad_d = grads[:, d : d + 1]
-            grad2 = torch.autograd.grad(
-                grad_d, x,
-                grad_outputs=torch.ones_like(grad_d),
-                create_graph=True,
-            )[0][:, d : d + 1]
-            laplacian += grad2
-
         K_sat = float(physics.materials.cell_property("hydraulic_conductivity").mean())
+        retention = getattr(physics, "retention_model", None)
 
-        # Time derivative (last coordinate is time for transient)
-        if x.shape[1] > dim:
-            dH_dt = grads[:, dim : dim + 1]
-            porosity = float(physics.materials.cell_property("porosity").mean())
-            residual = K_sat * laplacian - porosity * dH_dt
+        if retention is not None:
+            # --- Full nonlinear Richards via van Genuchten ----------
+            alpha = retention.alpha
+            n_vg = retention.n
+            m_vg = retention.m
+            theta_r = retention.theta_r
+            theta_s = retention.theta_s
+
+            # Pressure head: h = H - z  (z is last spatial coordinate)
+            z = x[:, dim - 1 : dim]
+            h = H - z
+
+            # Effective saturation Se(h) ∈ [0, 1]
+            abs_h = torch.abs(h)
+            Se = torch.where(
+                h >= 0,
+                torch.ones_like(h),
+                (1.0 + (alpha * abs_h) ** n_vg) ** (-m_vg),
+            )
+            Se = torch.clamp(Se, 1e-10, 1.0)
+
+            # Mualem–van Genuchten relative permeability
+            inner = 1.0 - (1.0 - Se ** (1.0 / m_vg)) ** m_vg
+            Kr = Se ** 0.5 * inner ** 2
+            K_h = K_sat * Kr  # (N, 1)
+
+            # Flux divergence ∇·[K(h) ∇H] via autodiff
+            divergence = torch.zeros_like(H)
+            for d in range(dim):
+                q_d = K_h * grads_H[:, d : d + 1]
+                dq_d = torch.autograd.grad(
+                    q_d, x,
+                    grad_outputs=torch.ones_like(q_d),
+                    create_graph=True,
+                )[0][:, d : d + 1]
+                divergence += dq_d
+
+            # Specific moisture capacity C(h) = dθ/dh
+            alpha_h_n = (alpha * abs_h) ** n_vg
+            denom = 1.0 + alpha_h_n
+            C_h = torch.where(
+                h >= 0,
+                torch.zeros_like(h),
+                (theta_s - theta_r)
+                * alpha * n_vg * m_vg
+                * alpha_h_n
+                / (abs_h + 1e-30)
+                * denom ** (-(m_vg + 1)),
+            )
+
+            # Time derivative ∂H/∂t (= ∂h/∂t since ∂z/∂t = 0)
+            if x.shape[1] > dim:
+                dH_dt = grads_H[:, dim : dim + 1]
+                residual = divergence - C_h * dH_dt
+            else:
+                residual = divergence
         else:
-            residual = K_sat * laplacian
+            # --- Linearised fallback: K_sat ∇²H = n ∂H/∂t ----------
+            laplacian = torch.zeros_like(H)
+            for d in range(dim):
+                grad_d = grads_H[:, d : d + 1]
+                grad2 = torch.autograd.grad(
+                    grad_d, x,
+                    grad_outputs=torch.ones_like(grad_d),
+                    create_graph=True,
+                )[0][:, d : d + 1]
+                laplacian += grad2
+
+            if x.shape[1] > dim:
+                dH_dt = grads_H[:, dim : dim + 1]
+                porosity = float(
+                    physics.materials.cell_property("porosity").mean()
+                )
+                residual = K_sat * laplacian - porosity * dH_dt
+            else:
+                residual = K_sat * laplacian
 
         return (residual ** 2).mean()
 
