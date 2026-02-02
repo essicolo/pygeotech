@@ -22,6 +22,10 @@ postprocess
     Derived quantities, probes, integrals, export.
 visualization
     2-D and 3-D plotting utilities.
+stratigraphy
+    Borehole classification and spatial interpolation of geological layers.
+slope
+    Slope stability analysis (LEM, SRM).
 """
 
 from pygeotech import (
@@ -34,6 +38,8 @@ from pygeotech import (
     time,
     postprocess,
     visualization,
+    stratigraphy,
+    slope,
 )
 
 __version__ = "0.1.0"
@@ -48,4 +54,6 @@ __all__ = [
     "time",
     "postprocess",
     "visualization",
+    "stratigraphy",
+    "slope",
 ]
